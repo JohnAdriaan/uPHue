@@ -17,6 +17,15 @@
      * Thus a single `Bridge` is required, and has to be passed in to
        whichever `.Bridge` is desired: e.g. `light_bridge = Light.Bridge(bridge)`
 
+   * All sub-classes were extracted into separate modules.
+     This allows only the relevant modules to be `import`ed:
+     ```
+     import uPHue.bridge
+     import uPHue.light
+     ```
+   * You can still `import uPHue.uPHue` and use it (much) like `phue` - except for the
+     per-sub-class `.Bridge`s
+
 # phue: A Python library for Philips Hue
 
 Full featured Python library to control the Philips Hue lighting system.

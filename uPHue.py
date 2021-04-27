@@ -42,10 +42,6 @@ import socket
 import http.client as httplib
 
 logger = logging.getLogger('phue')
-#logger.setLevel(0)
-#handler = logging.StreamHandler(sys.stdout)
-#handler.setLevel(0)
-#logger.addHandler(handler)
 
 __version__ = '1.2u'
 
@@ -53,6 +49,7 @@ __version__ = '1.2u'
 def is_string(data):
     """Utility method to see if data is a string."""
     return isinstance(data, str)
+
 
 class PhueException(Exception):
 
@@ -635,7 +632,7 @@ class Sensor(object):
         self._type = None
         self._uniqueid = None
         self._manufacturername = None
-        self._state = State(self.bridge, sensor_id)
+        self._state = Sensor.State(self.bridge, sensor_id)
         self._config = {}
         self._recycle = None
 
