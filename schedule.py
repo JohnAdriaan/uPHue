@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+from uPHue import *
+
+
 class Schedule(object):
 
     """ This is merely a container for `Schedule.Bridge`"""

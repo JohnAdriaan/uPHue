@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+from uPHue import *
+
+
 class Scene(object):
     """ Container for Scene """
 

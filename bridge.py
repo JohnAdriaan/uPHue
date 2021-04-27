@@ -1,5 +1,13 @@
 # -*- coding: utf-8 -*-
 
+import os
+import socket
+import json
+import http.client as httplib
+
+from uPHue import *
+
+
 class Bridge(object):
 
     """ Interface to the Hue ZigBee bridge

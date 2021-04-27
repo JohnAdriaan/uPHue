@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 
+import logging
+
 __version__ = '1.2u'
+
+logger = logging.getLogger('uPHue')
 
 
 def is_string(data):

@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 
-import light
+from uPHue import *
+from uPHue.light import Light
 
 
-class Group(light.Light):
+class Group(Light):
 
     """ A group of Hue lights, tracked as a group on the bridge
 
     Example:
 
         >>> b = Bridge()
-        >>> g1 = Group(b, 1)
+        >>> gb = Group.Bridge(b)
+        >>> g1 = Group(gb, 1)
         >>> g1.hue = 50000 # all lights in that group turn blue
         >>> g1.on = False # all will turn off
 

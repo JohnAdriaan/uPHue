@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+from uPHue import *
+
+
 class Sensor(object):
 
     """ Hue Sensor object

@@ -33,12 +33,10 @@ I am in no way affiliated with the Philips organization.
 
 '''
 
-import json
 import logging
 import os
-import platform
-import sys
 import socket
+import json
 import http.client as httplib
 
 logger = logging.getLogger('phue')
