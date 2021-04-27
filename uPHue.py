@@ -2,6 +2,25 @@
 # -*- coding: utf-8 -*-
 
 '''
+uPHue by John Adriaan - A Philips Hue MicroPython library
+Adapted from phue - see below.
+
+Changes made:
+
+ * MicroPython is Python3, so all references to `PY3K` were removed
+ * There is no `USER_HOME`, so all references were removed
+ * All references to Windows, iPhone/iPad etc were removed
+ * The `phue` `Bridge` class was a catch-all for the entire system state.
+   This uses a lot of memory, when maybe only (e.g.) `Light` was desired
+
+   * Bridge was pared down to essential comms only.
+
+     * Helper `get()`, `put()`, `post()` and `delete()` functions were written
+       for easier calling, along with the `api` variable.
+     * Each `phue` object` got its own `.Bridge` with only its functions and variables
+     * Thus a single `Bridge` is required, and has to be passed in to
+       whichever `.Bridge` is desired: e.g. `light_bridge = Light.Bridge(bridge)`
+
 phue by Nathanaël Lécaudé - A Philips Hue Python library
 Contributions by Marshall Perrin, Justin Lintz
 https://github.com/studioimaginaire/phue
@@ -20,47 +39,20 @@ import os
 import platform
 import sys
 import socket
-if sys.version_info[0] > 2:
-    PY3K = True
-else:
-    PY3K = False
-
-if PY3K:
-    import http.client as httplib
-else:
-    import httplib
+import http.client as httplib
 
 logger = logging.getLogger('phue')
+#logger.setLevel(0)
+#handler = logging.StreamHandler(sys.stdout)
+#handler.setLevel(0)
+#logger.addHandler(handler)
 
-
-if platform.system() == 'Windows':
-    USER_HOME = 'USERPROFILE'
-else:
-    USER_HOME = 'HOME'
-
-__version__ = '1.2'
+__version__ = '1.2u'
 
 
 def is_string(data):
     """Utility method to see if data is a string."""
-    if PY3K:
-        return isinstance(data, str)
-    else:
-        return isinstance(data, str) or isinstance(data, unicode)  # noqa
-
-def encodeString(string):
-    """Utility method to encode strings as utf-8."""
-    if PY3K:
-        return string
-    else:
-        return string.encode('utf-8')
-
-def decodeString(string):
-    """Utility method to decode strings as utf-8."""
-    if PY3K:
-        return string
-    else:
-        return string.decode('utf-8')
+    return isinstance(data, str)
 
 class PhueException(Exception):
 
@@ -84,8 +76,144 @@ class Light(object):
     Light settings can be accessed or set via the properties of this object.
 
     """
-    def __init__(self, bridge, light_id):
-        self.bridge = bridge
+
+    class Bridge(object):
+
+        """
+            You can obtain Light objects by calling the get_light_objects method:
+
+            >>> b = Bridge(ip='192.168.1.100')
+            >>> lb = Light.Bridge(b)
+            >>> lb.get_light_objects()
+            [<phue.Light at 0x10473d750>,
+             <phue.Light at 0x1046ce110>]
+
+            Or more succinctly just by accessing this Bridge object as a list or dict:
+
+            >>> lb[1]
+            <phue.Light at 0x10473d750>
+            >>> lb['Kitchen']
+            <phue.Light at 0x10473d750>
+        """
+
+        def __init__(self, bridge):
+            self.bridge = bridge
+            self.lights_by_id = {}
+            self.lights_by_name = {}
+
+        def get_light_id_by_name(self, name):
+            """ Lookup a light id based on string name. Case-sensitive. """
+            lights = self.get_light()
+            for light_id in lights:
+                if name == lights[light_id]['name']:
+                    return light_id
+            return False
+
+        def get_light_objects(self, mode='list'):
+            """Returns a collection containing the lights, either by name or id (use 'id' or 'name' as the mode)
+            The returned collection can be either a list (default), or a dict.
+            Set mode='id' for a dict by light ID, or mode='name' for a dict by light name.   """
+            if self.lights_by_id == {}:
+                lights = self.bridge.get('/lights/')
+                for light in lights:
+                    self.lights_by_id[int(light)] = Light(self, int(light))
+                    self.lights_by_name[lights[light][
+                        'name']] = self.lights_by_id[int(light)]
+            if mode == 'id':
+                return self.lights_by_id
+            if mode == 'name':
+                return self.lights_by_name
+            if mode == 'list':
+                # return lights in sorted id order, dicts have no natural order
+                return [self.lights_by_id[id] for id in sorted(self.lights_by_id)]
+
+        def __getitem__(self, key):
+            """ Lights are accessibly by indexing the bridge either with
+            an integer index or string name. """
+            if self.lights_by_id == {}:
+                self.get_light_objects()
+
+            try:
+                return self.lights_by_id[key]
+            except:
+                try:
+                    return self.lights_by_name[key]
+                except:
+                    raise KeyError(
+                        'Not a valid key (integer index starting with 1, or light name): ' + str(key))
+
+        @property
+        def lights(self):
+            """ Access lights as a list """
+            return self.get_light_objects()
+
+        def get_light(self, light_id=None, parameter=None):
+            """ Gets state by light_id and parameter"""
+
+            if is_string(light_id):
+                light_id = self.get_light_id_by_name(light_id)
+            if light_id is None:
+                return self.bridge.get('/lights/')
+            state = self.bridge.get('/lights/' + str(light_id))
+            if parameter is None:
+                return state
+            if parameter in ['name', 'type', 'uniqueid', 'swversion']:
+                return state[parameter]
+            else:
+                try:
+                    return state['state'][parameter]
+                except KeyError as e:
+                    raise KeyError(
+                        'Not a valid key, parameter %s is not associated with light %s)'
+                        % (parameter, light_id))
+
+        def set_light(self, light_id, parameter, value=None, transitiontime=None):
+            """ Adjust properties of one or more lights.
+
+            light_id can be a single lamp or an array of lamps
+            parameters: 'on' : True|False , 'bri' : 0-254, 'sat' : 0-254, 'ct': 154-500
+
+            transitiontime : in **deciseconds**, time for this transition to take place
+                             Note that transitiontime only applies to *this* light
+                             command, it is not saved as a setting for use in the future!
+                             Use the Light class' transitiontime attribute if you want
+                             persistent time settings.
+
+            """
+            if isinstance(parameter, dict):
+                data = parameter
+            else:
+                data = {parameter: value}
+
+            if transitiontime is not None:
+                data['transitiontime'] = int(round(
+                    transitiontime))  # must be int for request format
+
+            light_id_array = light_id
+            if isinstance(light_id, int) or is_string(light_id):
+                light_id_array = [light_id]
+            result = []
+            for light in light_id_array:
+                logger.debug(str(data))
+                if parameter == 'name':
+                    result.append(self.bridge.put('/lights/' + str(
+                        light_id), data))
+                else:
+                    if is_string(light):
+                        converted_light = self.get_light_id_by_name(light)
+                    else:
+                        converted_light = light
+                    result.append(self.bridge.put('/lights/' + str(
+                        converted_light) + '/state', data))
+                if 'error' in list(result[-1][0].keys()):
+                    logger.warn("ERROR: {0} for light {1}".format(
+                        result[-1][0]['error']['description'], light))
+
+            logger.debug(result)
+            return result
+
+    def __init__(self, light_bridge, light_id):
+        self.bridge = light_bridge
         self.light_id = light_id
 
         self._name = None
@@ -131,7 +259,7 @@ class Light(object):
     @property
     def name(self):
         '''Get or set the name of the light [string]'''
-        return encodeString(self._get('name'))
+        return self._get('name')
 
     @name.setter
     def name(self, value):
@@ -310,26 +438,6 @@ class Light(object):
         return self._type
 
 
-class SensorState(dict):
-    def __init__(self, bridge, sensor_id):
-        self._bridge = bridge
-        self._sensor_id = sensor_id
-
-    def __setitem__(self, key, value):
-        dict.__setitem__(self, key, value)
-        self._bridge.set_sensor_state(self._sensor_id, self)
-
-
-class SensorConfig(dict):
-    def __init__(self, bridge, sensor_id):
-        self._bridge = bridge
-        self._sensor_id = sensor_id
-
-    def __setitem__(self, key, value):
-        dict.__setitem__(self, key, value)
-        self._bridge.set_sensor_config(self._sensor_id, self)
-
-
 class Sensor(object):
 
     """ Hue Sensor object
@@ -337,8 +445,188 @@ class Sensor(object):
     Sensor config and state can be read and updated via the properties of this object
 
     """
-    def __init__(self, bridge, sensor_id):
-        self.bridge = bridge
+
+    class State(dict):
+        def __init__(self, sensor_bridge, sensor_id):
+            self._bridge = sensor_bridge
+            self._sensor_id = sensor_id
+
+        def __setitem__(self, key, value):
+            dict.__setitem__(self, key, value)
+            self._bridge.set_sensor_state(self._sensor_id, self)
+
+    class Config(dict):
+        def __init__(self, sensor_bridge, sensor_id):
+            self._bridge = sensor_bridge
+            self._sensor_id = sensor_id
+
+        def __setitem__(self, key, value):
+            dict.__setitem__(self, key, value)
+            self._bridge.set_sensor_config(self._sensor_id, self)
+
+    class Bridge(object):
+
+        def __init__(self, bridge):
+            self.bridge = bridge
+            self.sensors_by_id = {}
+            self.sensors_by_name = {}
+
+        def get_sensor_id_by_name(self, name):
+            """ Lookup a sensor id based on string name. Case-sensitive. """
+            sensors = self.get_sensor()
+            for sensor_id in sensors:
+                if name == sensors[sensor_id]['name']:
+                    return sensor_id
+            return False
+
+        def get_sensor_objects(self, mode='list'):
+            """Returns a collection containing the sensors, either by name or id (use 'id' or 'name' as the mode)
+            The returned collection can be either a list (default), or a dict.
+            Set mode='id' for a dict by sensor ID, or mode='name' for a dict by sensor name.   """
+            if self.sensors_by_id == {}:
+                sensors = self.bridge.get('/sensors/')
+                for sensor in sensors:
+                    self.sensors_by_id[int(sensor)] = Sensor(self, int(sensor))
+                    self.sensors_by_name[sensors[sensor][
+                        'name']] = self.sensors_by_id[int(sensor)]
+            if mode == 'id':
+                return self.sensors_by_id
+            if mode == 'name':
+                return self.sensors_by_name
+            if mode == 'list':
+                return self.sensors_by_id.values()
+
+        @property
+        def sensors(self):
+            """ Access sensors as a list """
+            return self.get_sensor_objects()
+
+        def create_sensor(self, name, modelid, swversion, sensor_type, uniqueid, manufacturername, state={}, config={}, recycle=False):
+            """ Create a new sensor in the bridge. Returns (ID,None) of the new sensor or (None,message) if creation failed. """
+            data = {
+                "name": name,
+                "modelid": modelid,
+                "swversion": swversion,
+                "type": sensor_type,
+                "uniqueid": uniqueid,
+                "manufacturername": manufacturername,
+                "recycle": recycle
+            }
+            if (isinstance(state, dict) and state != {}):
+                data["state"] = state
+
+            if (isinstance(config, dict) and config != {}):
+                data["config"] = config
+
+            result = self.bridge.post('/sensors/', data)
+
+            if ("success" in result[0].keys()):
+                new_id = result[0]["success"]["id"]
+                logger.debug("Created sensor with ID " + new_id)
+                new_sensor = Sensor(self, int(new_id))
+                self.sensors_by_id[new_id] = new_sensor
+                self.sensors_by_name[name] = new_sensor
+                return new_id, None
+            else:
+                logger.debug("Failed to create sensor:" + repr(result[0]))
+                return None, result[0]
+
+        def get_sensor(self, sensor_id=None, parameter=None):
+            """ Gets state by sensor_id and parameter"""
+
+            if is_string(sensor_id):
+                sensor_id = self.get_sensor_id_by_name(sensor_id)
+            if sensor_id is None:
+                return self.bridge.get('/sensors/')
+            data = self.bridge.get('/sensors/' + str(sensor_id))
+
+            if isinstance(data, list):
+                logger.debug("Unable to read sensor with ID {0}: {1}".format(sensor_id, repr(data)))
+                return None
+
+            if parameter is None:
+                return data
+            return data[parameter]
+
+        def set_sensor(self, sensor_id, parameter, value=None):
+            """ Adjust properties of a sensor
+
+            sensor_id must be a single sensor.
+            parameters: 'name' : string
+
+            """
+            if isinstance(parameter, dict):
+                data = parameter
+            else:
+                data = {parameter: value}
+
+            result = None
+            logger.debug(str(data))
+            result = self.bridge.put('/sensors/' + str(
+                sensor_id), data)
+            if 'error' in list(result[0].keys()):
+                logger.warn("ERROR: {0} for sensor {1}".format(
+                    result[0]['error']['description'], sensor_id))
+
+            logger.debug(result)
+            return result
+
+        def set_sensor_state(self, sensor_id, parameter, value=None):
+            """ Adjust the "state" object of a sensor
+
+            sensor_id must be a single sensor.
+            parameters: any parameter(s) present in the sensor's "state" dictionary.
+
+            """
+            self.set_sensor_content(sensor_id, parameter, value, "state")
+
+        def set_sensor_config(self, sensor_id, parameter, value=None):
+            """ Adjust the "config" object of a sensor
+
+            sensor_id must be a single sensor.
+            parameters: any parameter(s) present in the sensor's "config" dictionary.
+
+            """
+            self.set_sensor_content(sensor_id, parameter, value, "config")
+
+        def set_sensor_content(self, sensor_id, parameter, value=None, structure="state"):
+            """ Adjust the "state" or "config" structures of a sensor
+            """
+            if (structure != "state" and structure != "config"):
+                logger.debug("set_sensor_current expects structure 'state' or 'config'.")
+                return False
+
+            if isinstance(parameter, dict):
+                data = parameter.copy()
+            else:
+                data = {parameter: value}
+
+            # Attempting to set this causes an error.
+            if "lastupdated" in data:
+                del data["lastupdated"]
+
+            result = None
+            logger.debug(str(data))
+            result = self.bridge.put('/sensors/' + str(
+                sensor_id) + "/" + structure, data)
+            if 'error' in list(result[0].keys()):
+                logger.warn("ERROR: {0} for sensor {1}".format(
+                    result[0]['error']['description'], sensor_id))
+
+            logger.debug(result)
+            return result
+
+        def delete_sensor(self, sensor_id):
+            try:
+                name = self.sensors_by_id[sensor_id].name
+                del self.sensors_by_name[name]
+                del self.sensors_by_id[sensor_id]
+                return self.bridge.delete('/sensors/' + str(sensor_id))
+            except:
+                logger.debug("Unable to delete nonexistent sensor with ID {0}".format(sensor_id))
+
+    def __init__(self, sensor_bridge, sensor_id):
+        self.bridge = sensor_bridge
         self.sensor_id = sensor_id
 
         self._name = None
@@ -347,7 +635,7 @@ class Sensor(object):
         self._type = None
         self._uniqueid = None
         self._manufacturername = None
-        self._state = SensorState(bridge, sensor_id)
+        self._state = State(self.bridge, sensor_id)
         self._config = {}
         self._recycle = None
 
@@ -369,7 +657,7 @@ class Sensor(object):
     @property
     def name(self):
         '''Get or set the name of the sensor [string]'''
-        return encodeString(self._get('name'))
+        return self._get('name')
 
     @name.setter
     def name(self, value):
@@ -462,17 +750,114 @@ class Group(Light):
 
     """
 
-    def __init__(self, bridge, group_id):
-        Light.__init__(self, bridge, None)
+    class Bridge(Light.Bridge):
+
+        def __init__(self, bridge):
+            Light.Bridge.__init__(self, bridge)
+
+        @property
+        def groups(self):
+            """ Access groups as a list """
+            return [Group(self, int(groupid)) for groupid in self.get_group().keys()]
+
+        def get_group_id_by_name(self, name):
+            """ Lookup a group id based on string name. Case-sensitive. """
+            groups = self.get_group()
+            for group_id in groups:
+                if name == groups[group_id]['name']:
+                    return int(group_id)
+            return False
+
+        def get_group(self, group_id=None, parameter=None):
+            if is_string(group_id):
+                group_id = self.get_group_id_by_name(group_id)
+            if group_id is False:
+                logger.error('Group name does not exist')
+                return
+            if group_id is None:
+                return self.bridge.get('/groups/')
+            if parameter is None:
+                return self.bridge.get('/groups/' + str(group_id))
+            elif parameter == 'name' or parameter == 'lights':
+                return self.bridge.get('/groups/' + str(group_id))[parameter]
+            else:
+                return self.bridge.get('/groups/' + str(group_id))['action'][parameter]
+
+        def set_group(self, group_id, parameter, value=None, transitiontime=None):
+            """ Change light settings for a group
+
+            group_id : int, id number for group
+            parameter : 'name' or 'lights'
+            value: string, or list of light IDs if you're setting the lights
+
+            """
+
+            if isinstance(parameter, dict):
+                data = parameter
+            elif parameter == 'lights' and (isinstance(value, list) or isinstance(value, int)):
+                if isinstance(value, int):
+                    value = [value]
+                data = {parameter: [str(x) for x in value]}
+            else:
+                data = {parameter: value}
+
+            if transitiontime is not None:
+                data['transitiontime'] = int(round(
+                    transitiontime))  # must be int for request format
+
+            group_id_array = group_id
+            if isinstance(group_id, int) or is_string(group_id):
+                group_id_array = [group_id]
+            result = []
+            for group in group_id_array:
+                logger.debug(str(data))
+                if is_string(group):
+                    converted_group = self.get_group_id_by_name(group)
+                else:
+                    converted_group = group
+                if converted_group is False:
+                    logger.error('Group name does not exist')
+                    return
+                if parameter == 'name' or parameter == 'lights':
+                    result.append(self.bridge.put('/groups/' + str(converted_group), data))
+                else:
+                    result.append(self.bridge.put('/groups/' + str(converted_group) + '/action', data))
+
+            if 'error' in list(result[-1][0].keys()):
+                logger.warn("ERROR: {0} for group {1}".format(
+                    result[-1][0]['error']['description'], group))
+
+            logger.debug(result)
+            return result
+
+        def create_group(self, name, lights=None):
+            """ Create a group of lights
+
+            Parameters
+            ------------
+            name : string
+                Name for this group of lights
+            lights : list
+                List of lights to be in the group.
+
+            """
+            data = {'lights': [str(x) for x in lights], 'name': name}
+            return self.bridge.post('/groups/', data)
+
+        def delete_group(self, group_id):
+            return self.bridge.delete('/groups/' + str(group_id))
+
+    def __init__(self, group_bridge, group_id):
+        Light.__init__(self, group_bridge, None)
         del self.light_id  # not relevant for a group
 
         try:
             self.group_id = int(group_id)
         except:
             name = group_id
-            groups = bridge.get_group()
+            groups = self.bridge.get_group()
             for idnumber, info in groups.items():
-                if info['name'] == decodeString(name):
+                if info['name'] == name:
                     self.group_id = int(idnumber)
                     break
             else:
@@ -499,7 +884,7 @@ class Group(Light):
     @property
     def name(self):
         '''Get or set the name of the light group [string]'''
-        return encodeString(self._get('name'))
+        return self._get('name')
 
     @name.setter
     def name(self, value):
@@ -534,14 +919,109 @@ class AllLights(Group):
     listing the groups, but is accessible if you explicitly
     ask for group 0.
     """
-    def __init__(self, bridge=None):
-        if bridge is None:
-            bridge = Bridge()
+    def __init__(self, bridge):
         Group.__init__(self, bridge, 0)
 
 
 class Scene(object):
     """ Container for Scene """
+
+    class Bridge(object):
+
+        def __init__(self, bridge):
+            self.bridge = bridge
+
+        # Scenes #####
+        @property
+        def scenes(self):
+            return [Scene(k, **v) for k, v in self.get_scene().items()]
+
+        def create_group_scene(self, name, group):
+            """Create a Group Scene
+
+            Group scenes are based on the definition of groups and contain always all
+            lights from the selected group. No other lights from other rooms can be
+            added to a group scene and the group scene can not contain less lights
+            as available in the selected group. If a group is extended with new lights,
+            the new lights are added with default color to all group scenes based on
+            the corresponding group. This app has no influence on this behavior, it
+            was defined by Philips.
+
+            :param name: The name of the scene to be created
+            :param group: The group id of where the scene will be added
+            :return:
+            """
+            data = {
+                "name": name,
+                "group": group,
+                "recycle": True,
+                "type": "GroupScene"
+            }
+            return self.bridge.bridge.post('/scenes', data)
+
+        def modify_scene(self, scene_id, data):
+            return self.bridge.bridge.put('/scenes/' + scene_id, data)
+
+        def get_scene(self):
+            return self.bridge.bridge.get('/scenes')
+
+        def activate_scene(self, group_id, scene_id, transition_time=4):
+            return self.bridge.bridge.put('/groups/' +
+                                str(group_id) + '/action',
+                                {
+                                    "scene": scene_id,
+                                    "transitiontime": transition_time
+                                })
+
+        def run_scene(self, group_name, scene_name, transition_time=4):
+            """Run a scene by group and scene name.
+
+            As of 1.11 of the Hue API the scenes are accessable in the
+            API. With the gen 2 of the official HUE app everything is
+            organized by room groups.
+
+            This provides a convenience way of activating scenes by group
+            name and scene name. If we find exactly 1 group and 1 scene
+            with the matching names, we run them.
+
+            If we find more than one we run the first scene who has
+            exactly the same lights defined as the group. This is far from
+            perfect, but is convenient for setting lights symbolically (and
+            can be improved later).
+
+            :param transition_time: The duration of the transition from the
+            light’s current state to the new state in a multiple of 100ms
+            :returns True if a scene was run, False otherwise
+
+            """
+            groups = [x for x in self.groups if x.name == group_name]
+            scenes = [x for x in self.scenes if x.name == scene_name]
+            if len(groups) != 1:
+                logger.warn("run_scene: More than 1 group found by name {}".format(group_name))
+                return False
+            group = groups[0]
+            if len(scenes) == 0:
+                logger.warn("run_scene: No scene found {}".format(scene_name))
+                return False
+            if len(scenes) == 1:
+                self.activate_scene(group.group_id, scenes[0].scene_id, transition_time)
+                return True
+            # otherwise, lets figure out if one of the named scenes uses
+            # all the lights of the group
+            group_lights = sorted([x.light_id for x in group.lights])
+            for scene in scenes:
+                if group_lights == scene.lights:
+                    self.activate_scene(group.group_id, scene.scene_id, transition_time)
+                    return True
+            logger.warn("run_scene: did not find a scene: {} "
+                        "that shared lights with group {}".format(scene_name, group_name))
+            return False
+
+        def delete_scene(self, scene_id):
+            try:
+                return self.bridge.delete('/scenes/' + str(scene_id))
+            except:
+                logger.debug("Unable to delete scene with ID {0}".format(scene_id))
 
     def __init__(self, sid, appdata=None, lastupdated=None,
                  lights=None, locked=False, name="", owner="",
@@ -555,7 +1035,7 @@ class Scene(object):
         else:
             self.lights = []
         self.locked = locked
-        self.name = encodeString(name)
+        self.name = name
         self.owner = owner
         self.picture = picture
         self.recycle = recycle
@@ -577,22 +1057,6 @@ class Bridge(object):
 
     """ Interface to the Hue ZigBee bridge
 
-    You can obtain Light objects by calling the get_light_objects method:
-
-        >>> b = Bridge(ip='192.168.1.100')
-        >>> b.get_light_objects()
-        [<phue.Light at 0x10473d750>,
-         <phue.Light at 0x1046ce110>]
-
-    Or more succinctly just by accessing this Bridge object as a list or dict:
-
-        >>> b[1]
-        <phue.Light at 0x10473d750>
-        >>> b['Kitchen']
-        <phue.Light at 0x10473d750>
-
-
-
     """
     def __init__(self, ip=None, username=None, config_file_path=None):
         """ Initialization function.
@@ -607,19 +1071,13 @@ class Bridge(object):
 
         if config_file_path is not None:
             self.config_file_path = config_file_path
-        elif os.getenv(USER_HOME) is not None and os.access(os.getenv(USER_HOME), os.W_OK):
-            self.config_file_path = os.path.join(os.getenv(USER_HOME), '.python_hue')
-        elif 'iPad' in platform.machine() or 'iPhone' in platform.machine() or 'iPad' in platform.machine():
-            self.config_file_path = os.path.join(os.getenv(USER_HOME), 'Documents', '.python_hue')
         else:
             self.config_file_path = os.path.join(os.getcwd(), '.python_hue')
 
         self.ip = ip
         self.username = username
-        self.lights_by_id = {}
-        self.lights_by_name = {}
-        self.sensors_by_id = {}
-        self.sensors_by_name = {}
+        if username is not None:
+            self.api = '/api/' + username
         self._name = None
 
         # self.minutes = 600 # these do not seem to be used anywhere?
@@ -630,16 +1088,26 @@ class Bridge(object):
     @property
     def name(self):
         '''Get or set the name of the bridge [string]'''
-        self._name = self.request(
-            'GET', '/api/' + self.username + '/config')['name']
+        self._name = self.get('/config')['name']
         return self._name
 
     @name.setter
     def name(self, value):
         self._name = value
         data = {'name': self._name}
-        self.request(
-            'PUT', '/api/' + self.username + '/config', data)
+        self.put('/config', data)
+
+    def get(self, req):
+        return self.request('GET', self.api + req)
+
+    def put(self, req, data):
+        return self.request('PUT', self.api + req, data)
+
+    def post(self, req, data):
+        return self.request('POST', self.api + req, data)
+
+    def delete(self, req):
+        return self.request('DELETE', self.api + req)
 
     def request(self, mode='GET', address=None, data=None):
         """ Utility function for HTTP GET/PUT requests for the API"""
@@ -662,8 +1130,7 @@ class Bridge(object):
         result = connection.getresponse()
         response = result.read()
         connection.close()
-        if PY3K:
-            response = response.decode('utf-8')
+        response = response.decode('utf-8')
 
         logger.debug(response)
         return json.loads(response)
@@ -679,11 +1146,7 @@ class Bridge(object):
 
         result = connection.getresponse()
 
-        if PY3K:
-            data = json.loads(str(result.read(), encoding='utf-8'))
-        else:
-            result_str = result.read()
-            data = json.loads(result_str)
+        data = json.loads(str(result.read(), encoding='utf-8'))
 
         """ close connection after read() is done, to prevent issues with read() """
 
@@ -691,7 +1154,7 @@ class Bridge(object):
 
         ip = str(data[0]['internalipaddress'])
 
-        if ip is not '':
+        if ip != '':
             if set_result:
                 self.ip = ip
 
@@ -741,6 +1204,7 @@ class Bridge(object):
                         logger.info('Using ip: ' + self.ip)
                     if self.username is None:
                         self.username = config[self.ip]['username']
+                        self.api = '/api/' + self.username
                         logger.info(
                             'Using username from config: ' + self.username)
                     else:
@@ -750,510 +1214,67 @@ class Bridge(object):
                     'Error opening config file, will attempt bridge registration')
                 self.register_app()
 
-    def get_light_id_by_name(self, name):
-        """ Lookup a light id based on string name. Case-sensitive. """
-        lights = self.get_light()
-        for light_id in lights:
-            if decodeString(name) == lights[light_id]['name']:
-                return light_id
-        return False
-
-    def get_light_objects(self, mode='list'):
-        """Returns a collection containing the lights, either by name or id (use 'id' or 'name' as the mode)
-        The returned collection can be either a list (default), or a dict.
-        Set mode='id' for a dict by light ID, or mode='name' for a dict by light name.   """
-        if self.lights_by_id == {}:
-            lights = self.request('GET', '/api/' + self.username + '/lights/')
-            for light in lights:
-                self.lights_by_id[int(light)] = Light(self, int(light))
-                self.lights_by_name[lights[light][
-                    'name']] = self.lights_by_id[int(light)]
-        if mode == 'id':
-            return self.lights_by_id
-        if mode == 'name':
-            return self.lights_by_name
-        if mode == 'list':
-            # return ligts in sorted id order, dicts have no natural order
-            return [self.lights_by_id[id] for id in sorted(self.lights_by_id)]
-
-    def get_sensor_id_by_name(self, name):
-        """ Lookup a sensor id based on string name. Case-sensitive. """
-        sensors = self.get_sensor()
-        for sensor_id in sensors:
-            if decodeString(name) == sensors[sensor_id]['name']:
-                return sensor_id
-        return False
-
-    def get_sensor_objects(self, mode='list'):
-        """Returns a collection containing the sensors, either by name or id (use 'id' or 'name' as the mode)
-        The returned collection can be either a list (default), or a dict.
-        Set mode='id' for a dict by sensor ID, or mode='name' for a dict by sensor name.   """
-        if self.sensors_by_id == {}:
-            sensors = self.request('GET', '/api/' + self.username + '/sensors/')
-            for sensor in sensors:
-                self.sensors_by_id[int(sensor)] = Sensor(self, int(sensor))
-                self.sensors_by_name[sensors[sensor][
-                    'name']] = self.sensors_by_id[int(sensor)]
-        if mode == 'id':
-            return self.sensors_by_id
-        if mode == 'name':
-            return self.sensors_by_name
-        if mode == 'list':
-            return self.sensors_by_id.values()
-
-    def __getitem__(self, key):
-        """ Lights are accessibly by indexing the bridge either with
-        an integer index or string name. """
-        if self.lights_by_id == {}:
-            self.get_light_objects()
-
-        try:
-            return self.lights_by_id[key]
-        except:
-            try:
-                return self.lights_by_name[decodeString(key)]
-            except:
-                raise KeyError(
-                    'Not a valid key (integer index starting with 1, or light name): ' + str(key))
-
-    @property
-    def lights(self):
-        """ Access lights as a list """
-        return self.get_light_objects()
-
     def get_api(self):
         """ Returns the full api dictionary """
-        return self.request('GET', '/api/' + self.username)
-
-    def get_light(self, light_id=None, parameter=None):
-        """ Gets state by light_id and parameter"""
-
-        if is_string(light_id):
-            light_id = self.get_light_id_by_name(light_id)
-        if light_id is None:
-            return self.request('GET', '/api/' + self.username + '/lights/')
-        state = self.request(
-            'GET', '/api/' + self.username + '/lights/' + str(light_id))
-        if parameter is None:
-            return state
-        if parameter in ['name', 'type', 'uniqueid', 'swversion']:
-            return state[parameter]
-        else:
-            try:
-                return state['state'][parameter]
-            except KeyError as e:
-                raise KeyError(
-                    'Not a valid key, parameter %s is not associated with light %s)'
-                    % (parameter, light_id))
-
-    def set_light(self, light_id, parameter, value=None, transitiontime=None):
-        """ Adjust properties of one or more lights.
-
-        light_id can be a single lamp or an array of lamps
-        parameters: 'on' : True|False , 'bri' : 0-254, 'sat' : 0-254, 'ct': 154-500
-
-        transitiontime : in **deciseconds**, time for this transition to take place
-                         Note that transitiontime only applies to *this* light
-                         command, it is not saved as a setting for use in the future!
-                         Use the Light class' transitiontime attribute if you want
-                         persistent time settings.
-
-        """
-        if isinstance(parameter, dict):
-            data = parameter
-        else:
-            data = {parameter: value}
-
-        if transitiontime is not None:
-            data['transitiontime'] = int(round(
-                transitiontime))  # must be int for request format
-
-        light_id_array = light_id
-        if isinstance(light_id, int) or is_string(light_id):
-            light_id_array = [light_id]
-        result = []
-        for light in light_id_array:
-            logger.debug(str(data))
-            if parameter == 'name':
-                result.append(self.request('PUT', '/api/' + self.username + '/lights/' + str(
-                    light_id), data))
-            else:
-                if is_string(light):
-                    converted_light = self.get_light_id_by_name(light)
-                else:
-                    converted_light = light
-                result.append(self.request('PUT', '/api/' + self.username + '/lights/' + str(
-                    converted_light) + '/state', data))
-            if 'error' in list(result[-1][0].keys()):
-                logger.warn("ERROR: {0} for light {1}".format(
-                    result[-1][0]['error']['description'], light))
-
-        logger.debug(result)
-        return result
-
-    # Sensors #####
-
-    @property
-    def sensors(self):
-        """ Access sensors as a list """
-        return self.get_sensor_objects()
-
-    def create_sensor(self, name, modelid, swversion, sensor_type, uniqueid, manufacturername, state={}, config={}, recycle=False):
-        """ Create a new sensor in the bridge. Returns (ID,None) of the new sensor or (None,message) if creation failed. """
-        data = {
-            "name": name,
-            "modelid": modelid,
-            "swversion": swversion,
-            "type": sensor_type,
-            "uniqueid": uniqueid,
-            "manufacturername": manufacturername,
-            "recycle": recycle
-        }
-        if (isinstance(state, dict) and state != {}):
-            data["state"] = state
-
-        if (isinstance(config, dict) and config != {}):
-            data["config"] = config
-
-        result = self.request('POST', '/api/' + self.username + '/sensors/', data)
-
-        if ("success" in result[0].keys()):
-            new_id = result[0]["success"]["id"]
-            logger.debug("Created sensor with ID " + new_id)
-            new_sensor = Sensor(self, int(new_id))
-            self.sensors_by_id[new_id] = new_sensor
-            self.sensors_by_name[name] = new_sensor
-            return new_id, None
-        else:
-            logger.debug("Failed to create sensor:" + repr(result[0]))
-            return None, result[0]
-
-    def get_sensor(self, sensor_id=None, parameter=None):
-        """ Gets state by sensor_id and parameter"""
-
-        if is_string(sensor_id):
-            sensor_id = self.get_sensor_id_by_name(sensor_id)
-        if sensor_id is None:
-            return self.request('GET', '/api/' + self.username + '/sensors/')
-        data = self.request(
-            'GET', '/api/' + self.username + '/sensors/' + str(sensor_id))
-
-        if isinstance(data, list):
-            logger.debug("Unable to read sensor with ID {0}: {1}".format(sensor_id, repr(data)))
-            return None
-
-        if parameter is None:
-            return data
-        return data[parameter]
-
-    def set_sensor(self, sensor_id, parameter, value=None):
-        """ Adjust properties of a sensor
-
-        sensor_id must be a single sensor.
-        parameters: 'name' : string
-
-        """
-        if isinstance(parameter, dict):
-            data = parameter
-        else:
-            data = {parameter: value}
-
-        result = None
-        logger.debug(str(data))
-        result = self.request('PUT', '/api/' + self.username + '/sensors/' + str(
-            sensor_id), data)
-        if 'error' in list(result[0].keys()):
-            logger.warn("ERROR: {0} for sensor {1}".format(
-                result[0]['error']['description'], sensor_id))
-
-        logger.debug(result)
-        return result
-
-    def set_sensor_state(self, sensor_id, parameter, value=None):
-        """ Adjust the "state" object of a sensor
-
-        sensor_id must be a single sensor.
-        parameters: any parameter(s) present in the sensor's "state" dictionary.
-
-        """
-        self.set_sensor_content(sensor_id, parameter, value, "state")
-
-    def set_sensor_config(self, sensor_id, parameter, value=None):
-        """ Adjust the "config" object of a sensor
-
-        sensor_id must be a single sensor.
-        parameters: any parameter(s) present in the sensor's "config" dictionary.
-
-        """
-        self.set_sensor_content(sensor_id, parameter, value, "config")
-
-    def set_sensor_content(self, sensor_id, parameter, value=None, structure="state"):
-        """ Adjust the "state" or "config" structures of a sensor
-        """
-        if (structure != "state" and structure != "config"):
-            logger.debug("set_sensor_current expects structure 'state' or 'config'.")
-            return False
-
-        if isinstance(parameter, dict):
-            data = parameter.copy()
-        else:
-            data = {parameter: value}
-
-        # Attempting to set this causes an error.
-        if "lastupdated" in data:
-            del data["lastupdated"]
-
-        result = None
-        logger.debug(str(data))
-        result = self.request('PUT', '/api/' + self.username + '/sensors/' + str(
-            sensor_id) + "/" + structure, data)
-        if 'error' in list(result[0].keys()):
-            logger.warn("ERROR: {0} for sensor {1}".format(
-                result[0]['error']['description'], sensor_id))
-
-        logger.debug(result)
-        return result
-
-    def delete_sensor(self, sensor_id):
-        try:
-            name = self.sensors_by_id[sensor_id].name
-            del self.sensors_by_name[name]
-            del self.sensors_by_id[sensor_id]
-            return self.request('DELETE', '/api/' + self.username + '/sensors/' + str(sensor_id))
-        except:
-            logger.debug("Unable to delete nonexistent sensor with ID {0}".format(sensor_id))
-
-    # Groups of lights #####
-    @property
-    def groups(self):
-        """ Access groups as a list """
-        return [Group(self, int(groupid)) for groupid in self.get_group().keys()]
-
-    def get_group_id_by_name(self, name):
-        """ Lookup a group id based on string name. Case-sensitive. """
-        groups = self.get_group()
-        for group_id in groups:
-            if decodeString(name) == groups[group_id]['name']:
-                return int(group_id)
-        return False
-
-    def get_group(self, group_id=None, parameter=None):
-        if is_string(group_id):
-            group_id = self.get_group_id_by_name(group_id)
-        if group_id is False:
-            logger.error('Group name does not exist')
-            return
-        if group_id is None:
-            return self.request('GET', '/api/' + self.username + '/groups/')
-        if parameter is None:
-            return self.request('GET', '/api/' + self.username + '/groups/' + str(group_id))
-        elif parameter == 'name' or parameter == 'lights':
-            return self.request('GET', '/api/' + self.username + '/groups/' + str(group_id))[parameter]
-        else:
-            return self.request('GET', '/api/' + self.username + '/groups/' + str(group_id))['action'][parameter]
-
-    def set_group(self, group_id, parameter, value=None, transitiontime=None):
-        """ Change light settings for a group
-
-        group_id : int, id number for group
-        parameter : 'name' or 'lights'
-        value: string, or list of light IDs if you're setting the lights
-
-        """
-
-        if isinstance(parameter, dict):
-            data = parameter
-        elif parameter == 'lights' and (isinstance(value, list) or isinstance(value, int)):
-            if isinstance(value, int):
-                value = [value]
-            data = {parameter: [str(x) for x in value]}
-        else:
-            data = {parameter: value}
-
-        if transitiontime is not None:
-            data['transitiontime'] = int(round(
-                transitiontime))  # must be int for request format
-
-        group_id_array = group_id
-        if isinstance(group_id, int) or is_string(group_id):
-            group_id_array = [group_id]
-        result = []
-        for group in group_id_array:
-            logger.debug(str(data))
-            if is_string(group):
-                converted_group = self.get_group_id_by_name(group)
-            else:
-                converted_group = group
-            if converted_group is False:
-                logger.error('Group name does not exist')
-                return
-            if parameter == 'name' or parameter == 'lights':
-                result.append(self.request('PUT', '/api/' + self.username + '/groups/' + str(converted_group), data))
-            else:
-                result.append(self.request('PUT', '/api/' + self.username + '/groups/' + str(converted_group) + '/action', data))
-
-        if 'error' in list(result[-1][0].keys()):
-            logger.warn("ERROR: {0} for group {1}".format(
-                result[-1][0]['error']['description'], group))
-
-        logger.debug(result)
-        return result
-
-    def create_group(self, name, lights=None):
-        """ Create a group of lights
-
-        Parameters
-        ------------
-        name : string
-            Name for this group of lights
-        lights : list
-            List of lights to be in the group.
-
-        """
-        data = {'lights': [str(x) for x in lights], 'name': name}
-        return self.request('POST', '/api/' + self.username + '/groups/', data)
-
-    def delete_group(self, group_id):
-        return self.request('DELETE', '/api/' + self.username + '/groups/' + str(group_id))
-
-    # Scenes #####
-    @property
-    def scenes(self):
-        return [Scene(k, **v) for k, v in self.get_scene().items()]
-
-    def create_group_scene(self, name, group):
-        """Create a Group Scene
-
-        Group scenes are based on the definition of groups and contain always all
-        lights from the selected group. No other lights from other rooms can be
-        added to a group scene and the group scene can not contain less lights
-        as available in the selected group. If a group is extended with new lights,
-        the new lights are added with default color to all group scenes based on
-        the corresponding group. This app has no influence on this behavior, it
-        was defined by Philips.
-
-        :param name: The name of the scene to be created
-        :param group: The group id of where the scene will be added
-        :return:
-        """
-        data = {
-            "name": name,
-            "group": group,
-            "recycle": True,
-            "type": "GroupScene"
-        }
-        return self.request('POST', '/api/' + self.username + '/scenes', data)
-
-    def modify_scene(self, scene_id, data):
-        return self.request('PUT', '/api/' + self.username + '/scenes/' + scene_id, data)
-
-    def get_scene(self):
-        return self.request('GET', '/api/' + self.username + '/scenes')
-
-    def activate_scene(self, group_id, scene_id, transition_time=4):
-        return self.request('PUT', '/api/' + self.username + '/groups/' +
-                            str(group_id) + '/action',
-                            {
-                                "scene": scene_id,
-                                "transitiontime": transition_time
-                            })
-
-    def run_scene(self, group_name, scene_name, transition_time=4):
-        """Run a scene by group and scene name.
-
-        As of 1.11 of the Hue API the scenes are accessable in the
-        API. With the gen 2 of the official HUE app everything is
-        organized by room groups.
-
-        This provides a convenience way of activating scenes by group
-        name and scene name. If we find exactly 1 group and 1 scene
-        with the matching names, we run them.
-
-        If we find more than one we run the first scene who has
-        exactly the same lights defined as the group. This is far from
-        perfect, but is convenient for setting lights symbolically (and
-        can be improved later).
-
-        :param transition_time: The duration of the transition from the
-        light’s current state to the new state in a multiple of 100ms
-        :returns True if a scene was run, False otherwise
-
-        """
-        groups = [x for x in self.groups if x.name == group_name]
-        scenes = [x for x in self.scenes if x.name == scene_name]
-        if len(groups) != 1:
-            logger.warn("run_scene: More than 1 group found by name {}".format(group_name))
-            return False
-        group = groups[0]
-        if len(scenes) == 0:
-            logger.warn("run_scene: No scene found {}".format(scene_name))
-            return False
-        if len(scenes) == 1:
-            self.activate_scene(group.group_id, scenes[0].scene_id, transition_time)
-            return True
-        # otherwise, lets figure out if one of the named scenes uses
-        # all the lights of the group
-        group_lights = sorted([x.light_id for x in group.lights])
-        for scene in scenes:
-            if group_lights == scene.lights:
-                self.activate_scene(group.group_id, scene.scene_id, transition_time)
-                return True
-        logger.warn("run_scene: did not find a scene: {} "
-                    "that shared lights with group {}".format(scene_name, group_name))
-        return False
-
-    def delete_scene(self, scene_id):
-        try:
-            return self.request('DELETE', '/api/' + self.username + '/scenes/' + str(scene_id))
-        except:
-            logger.debug("Unable to delete scene with ID {0}".format(scene_id))
-
-    # Schedules #####
-    def get_schedule(self, schedule_id=None, parameter=None):
-        if schedule_id is None:
-            return self.request('GET', '/api/' + self.username + '/schedules')
-        if parameter is None:
-            return self.request('GET', '/api/' + self.username + '/schedules/' + str(schedule_id))
-
-    def create_schedule(self, name, time, light_id, data, description=' '):
-        schedule = {
-            'name': name,
-            'localtime': time,
-            'description': description,
-            'command':
-            {
-                'method': 'PUT',
-                'address': ('/api/' + self.username +
-                            '/lights/' + str(light_id) + '/state'),
-                'body': data
+        return self.get('')
+
+
+class Schedule(object):
+
+    """ This is merely a container for `Schedule.Bridge`"""
+
+    class Bridge(object):
+
+        def __init__(self, bridge):
+            self.bridge = bridge
+
+        # Schedules #####
+        def get_schedule(self, schedule_id=None, parameter=None):
+            if schedule_id is None:
+                return self.bridge.get('/schedules')
+            if parameter is None:
+                return self.bridge.get('/schedules/' + str(schedule_id))
+
+        def create_schedule(self, name, time, light_id, data, description=' '):
+            schedule = {
+                'name': name,
+                'localtime': time,
+                'description': description,
+                'command':
+                {
+                    'method': 'PUT',
+                    'address': (self.bridge.api +
+                                '/lights/' + str(light_id) + '/state'),
+                    'body': data
+                }
             }
-        }
-        return self.request('POST', '/api/' + self.username + '/schedules', schedule)
+            return self.bridge.post('/schedules', schedule)
 
-    def set_schedule_attributes(self, schedule_id, attributes):
-        """
-        :param schedule_id: The ID of the schedule
-        :param attributes: Dictionary with attributes and their new values
-        """
-        return self.request('PUT', '/api/' + self.username + '/schedules/' + str(schedule_id), data=attributes)
+        def set_schedule_attributes(self, schedule_id, attributes):
+            """
+            :param schedule_id: The ID of the schedule
+            :param attributes: Dictionary with attributes and their new values
+            """
+            return self.bridge.put('/schedules/' + str(schedule_id), data=attributes)
 
-    def create_group_schedule(self, name, time, group_id, data, description=' '):
-        schedule = {
-            'name': name,
-            'localtime': time,
-            'description': description,
-            'command':
-            {
-                'method': 'PUT',
-                'address': ('/api/' + self.username +
-                            '/groups/' + str(group_id) + '/action'),
-                'body': data
+        def create_group_schedule(self, name, time, group_id, data, description=' '):
+            schedule = {
+                'name': name,
+                'localtime': time,
+                'description': description,
+                'command':
+                {
+                    'method': 'PUT',
+                    'address': (self.bridge.api +
+                                '/groups/' + str(group_id) + '/action'),
+                    'body': data
+                }
             }
-        }
-        return self.request('POST', '/api/' + self.username + '/schedules', schedule)
+            return self.bridge.post('/schedules', schedule)
 
-    def delete_schedule(self, schedule_id):
-        return self.request('DELETE', '/api/' + self.username + '/schedules/' + str(schedule_id))
+        def delete_schedule(self, schedule_id):
+            return self.bridge.delete('/schedules/' + str(schedule_id))
+
 
 if __name__ == '__main__':
     import argparse
@@ -1261,16 +1282,16 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', required=True)
+    parser.add_argument('--host', default='192.168.0.113', required=False)
     parser.add_argument('--config-file-path', required=False)
     args = parser.parse_args()
 
     while True:
         try:
             b = Bridge(args.host, config_file_path=args.config_file_path)
+            b.get_api()
+            lb = Light.Bridge(b)
+            lb.get_light_objects('list')
             break
         except PhueRegistrationException as e:
-            if PY3K:
-                input('Press button on Bridge then hit Enter to try again')
-            else:
-                raw_input('Press button on Bridge then hit Enter to try again')  # noqa
+            input('Press button on Bridge then hit Enter to try again')

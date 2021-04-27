@@ -1,5 +1,21 @@
 # uPHue: A MicroPython library for Philips Hue
-(Based on phue - see below)
+(Adapted from `phue` - see below)
+
+## Changes made:
+
+ * MicroPython is Python3, so all references to `PY3K` were removed
+ * There is no `USER_HOME`, so all references were removed
+ * All references to Windows, iPhone/iPad etc were removed
+ * The `phue` `Bridge` class was a catch-all for the entire system state.
+   This uses a lot of memory, when maybe only (e.g.) `Light` was desired:
+
+   * Bridge was pared down to essential comms only.
+
+     * Helper `get()`, `put()`, `post()` and `delete()` functions were written
+       for easier calling, along with the `api` variable.
+     * Each `phue` object got its own `.Bridge` with only its functions and variables
+     * Thus a single `Bridge` is required, and has to be passed in to
+       whichever `.Bridge` is desired: e.g. `light_bridge = Light.Bridge(bridge)`
 
 # phue: A Python library for Philips Hue
 
