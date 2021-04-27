@@ -1,3 +1,6 @@
+# uPHue: A MicroPython library for Philips Hue
+(Based on phue - see below)
+
 # phue: A Python library for Philips Hue
 
 Full featured Python library to control the Philips Hue lighting system.
